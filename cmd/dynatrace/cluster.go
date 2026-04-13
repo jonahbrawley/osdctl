@@ -2,6 +2,7 @@ package dynatrace
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	ocmutils "github.com/openshift/osdctl/pkg/utils"
@@ -22,6 +23,28 @@ type HCPCluster struct {
 }
 
 var ErrUnsupportedCluster = fmt.Errorf("not an HCP or MC Cluster")
+
+func GetClusterInfraID(clusterKey string) (string, error) {
+	if err := ocmutils.IsValidClusterKey(clusterKey); err != nil {
+		return "", err
+	}
+	connection, err := ocmutils.CreateConnection()
+	if err != nil {
+		return "", err
+	}
+	defer connection.Close()
+
+	cluster, err := ocmutils.GetCluster(connection, clusterKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to look up cluster %q in OCM: %w", clusterKey, err)
+	}
+
+	infraID := cluster.InfraID()
+	if infraID == "" {
+		return "", fmt.Errorf("cluster %q has no infra_id set in OCM", clusterKey)
+	}
+	return infraID, nil
+}
 
 func FetchClusterDetails(clusterKey string) (hcpCluster HCPCluster, error error) {
 	hcpCluster = HCPCluster{}
@@ -48,9 +71,9 @@ func FetchClusterDetails(clusterKey string) (hcpCluster HCPCluster, error error)
 			// if the cluster is not a HCP but a MC, then return a just relevant info for HCPCluster Object
 			hcpCluster.managementClusterID = cluster.ID()
 			hcpCluster.managementClusterName = cluster.Name()
-			url, err := ocmutils.GetDynatraceURLFromLabel(hcpCluster.managementClusterID)
+			url, err := ocmutils.ResolveDynatraceURL(hcpCluster.managementClusterID)
 			if err != nil {
-				return HCPCluster{}, fmt.Errorf("the Dynatrace Environment URL could not be determined. \nPlease refer the SOP to determine the correct Dynatrace Tenant URL- https://github.com/openshift/ops-sop/tree/master/dynatrace#what-environments-are-there \n\nError Details - %s", err)
+				return HCPCluster{}, fmt.Errorf("the Dynatrace Environment URL could not be determined. \nPlease refer the SOP to determine the correct Dynatrace Tenant URL- https://github.com/openshift/ops-sop/tree/master/dynatrace#what-environments-are-there \nAlternatively, set the --dynatrace-url flag or dt_tenant_url in ~/.config/osdctl \n\nError Details - %s", err)
 			}
 			hcpCluster.DynatraceURL = url
 			return hcpCluster, nil
@@ -63,7 +86,7 @@ func FetchClusterDetails(clusterKey string) (hcpCluster HCPCluster, error error)
 	}
 	svcCluster, err := ocmutils.GetServiceCluster(cluster.ID())
 	if err != nil {
-		return HCPCluster{}, fmt.Errorf("error retreiving Service Cluster for given HCP %s", err)
+		log.Printf("warning: could not retrieve Service Cluster for HCP (non-fatal): %v", err)
 	}
 	hcpCluster.hcpNamespace, err = ocmutils.GetHCPNamespace(cluster.ID())
 	if err != nil {
@@ -72,9 +95,9 @@ func FetchClusterDetails(clusterKey string) (hcpCluster HCPCluster, error error)
 	hcpCluster.klusterletNS = fmt.Sprintf("klusterlet-%s", cluster.ID())
 	hcpCluster.hostedNS = strings.SplitAfter(hcpCluster.hcpNamespace, cluster.ID())[0]
 
-	url, err := ocmutils.GetDynatraceURLFromLabel(mgmtCluster.ID())
+	url, err := ocmutils.ResolveDynatraceURL(mgmtCluster.ID())
 	if err != nil {
-		return HCPCluster{}, fmt.Errorf("the Dynatrace Environemnt URL could not be determined. \nPlease refer the SOP to determine the correct Dyntrace Tenant URL- https://github.com/openshift/ops-sop/tree/master/dynatrace#what-environments-are-there \n\nError Details - %s", err)
+		return HCPCluster{}, fmt.Errorf("the Dynatrace Environment URL could not be determined. \nPlease refer the SOP to determine the correct Dynatrace Tenant URL- https://github.com/openshift/ops-sop/tree/master/dynatrace#what-environments-are-there \nAlternatively, set the --dynatrace-url flag or dt_tenant_url in ~/.config/osdctl \n\nError Details - %s", err)
 	}
 
 	hcpCluster.DynatraceURL = url
@@ -83,8 +106,10 @@ func FetchClusterDetails(clusterKey string) (hcpCluster HCPCluster, error error)
 	hcpCluster.managementClusterID = mgmtCluster.ID()
 	hcpCluster.name = cluster.Name()
 	hcpCluster.managementClusterName = mgmtCluster.Name()
-	hcpCluster.serviceClusterID = svcCluster.ID()
-	hcpCluster.serviceClusterName = svcCluster.Name()
+	if svcCluster != nil {
+		hcpCluster.serviceClusterID = svcCluster.ID()
+		hcpCluster.serviceClusterName = svcCluster.Name()
+	}
 
 	return hcpCluster, nil
 }

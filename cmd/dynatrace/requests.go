@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -15,7 +17,7 @@ import (
 const (
 	VaultAddr string = "vault_address"
 
-	authURL string = "https://sso.dynatrace.com/sso/oauth2/token"
+	saasAuthURL string = "https://sso.dynatrace.com/sso/oauth2/token"
 
 	// Logs
 	DTStorageVaultPath string = "dt_vault_path"
@@ -26,6 +28,29 @@ const (
 	DTDocumentScopes    string = "document:documents:read"
 	DTDashboardType     string = "dashboard"
 )
+
+func isManagedMode() bool {
+	return viper.GetBool("dt_is_managed")
+}
+
+func getAuthURL() string {
+	if isManagedMode() {
+		tenantURL := viper.GetString("dt_tenant_url")
+		if tenantURL != "" {
+			tenantURL = strings.TrimSuffix(tenantURL, "/")
+			return tenantURL + "/sso/oauth2/token"
+		}
+	}
+	return saasAuthURL
+}
+
+func getManagedAPIToken() (string, error) {
+	token := os.Getenv("DT_API_TOKEN")
+	if token != "" {
+		return token, nil
+	}
+	return "", fmt.Errorf("DT_API_TOKEN environment variable is required for Dynatrace Managed.\nGenerate an API token with the 'logs.read' scope in your Dynatrace environment under Settings > Access Tokens")
+}
 
 type DTRequestError struct {
 	Records json.RawMessage `json:"error"`
@@ -99,22 +124,32 @@ func getVaultPath(vaultPathKey string) (addr, path string, error error) {
 	return vaultAddr, vaultPath, nil
 }
 
-// getScopedAccessToken gets an access token using the vault path in the configuration key specified
-// It will request any scopes listed in the scopes string
-func getScopedAccessToken(configKey string, scopes string) (string, error) {
-	vaultAddr, vaultPath, err := getVaultPath(configKey)
+func getClientCredentials(vaultConfigKey string) (clientId string, clientSecret string, err error) {
+	envId := os.Getenv("DT_CLIENT_ID")
+	envSecret := os.Getenv("DT_CLIENT_SECRET")
+	if envId != "" && envSecret != "" {
+		return envId, envSecret, nil
+	}
+
+	vaultAddr, vaultPath, err := getVaultPath(vaultConfigKey)
 	if err != nil {
-		return "", err
+		return "", "", fmt.Errorf("%w\nAlternatively, set the DT_CLIENT_ID and DT_CLIENT_SECRET environment variables", err)
 	}
 
 	err = setupVaultToken(vaultAddr)
 	if err != nil {
-		return "", nil
+		return "", "", err
 	}
 
-	clientId, clientSecret, err := getSecretFromVault(vaultAddr, vaultPath)
+	return getSecretFromVault(vaultAddr, vaultPath)
+}
+
+// getScopedAccessToken gets an access token by first checking the DT_CLIENT_ID
+// and DT_CLIENT_SECRET environment variables, then falling back to Vault.
+func getScopedAccessToken(configKey string, scopes string) (string, error) {
+	clientId, clientSecret, err := getClientCredentials(configKey)
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 
 	reqData := url.Values{
@@ -124,9 +159,11 @@ func getScopedAccessToken(configKey string, scopes string) (string, error) {
 		"client_secret": {clientSecret},
 	}.Encode()
 
+	tokenURL := getAuthURL()
+
 	requester := Requester{
 		method: http.MethodPost,
-		url:    authURL,
+		url:    tokenURL,
 		data:   string(reqData),
 		headers: map[string]string{
 			"Content-Type": "application/x-www-form-urlencoded",
@@ -150,7 +187,7 @@ func getScopedAccessToken(configKey string, scopes string) (string, error) {
 		return "", fmt.Errorf("access token not present in response")
 	}
 
-	fmt.Println("Successfully authenticated with DynaTrace")
+	fmt.Println("Successfully authenticated with Dynatrace")
 
 	return token, nil
 }
@@ -410,6 +447,97 @@ func getEvents(dtURL string, accessToken string, requestToken string, dumpWriter
 		} else {
 			fmt.Println(result)
 		}
+	}
+
+	return nil
+}
+
+type ManagedLogRecord struct {
+	Content   string                 `json:"content"`
+	Timestamp int64                  `json:"timestamp"`
+	Status    string                 `json:"status"`
+	EventType string                 `json:"eventType"`
+	Extra     map[string]interface{} `json:"additionalColumns"`
+}
+
+type ManagedLogSearchResult struct {
+	Results      []ManagedLogRecord `json:"results"`
+	SliceSize    int                `json:"sliceSize"`
+	NextSliceKey string             `json:"nextSliceKey"`
+}
+
+func getManagedLogs(dtURL string, apiToken string, searchQuery string, from string, to string, limit int, sortOrder string, dumpWriter io.Writer) error {
+	sort := "+timestamp"
+	if sortOrder == "desc" {
+		sort = "-timestamp"
+	}
+
+	params := url.Values{}
+	if searchQuery != "" {
+		params.Set("query", searchQuery)
+	}
+	params.Set("from", from)
+	params.Set("to", to)
+	if limit > 0 && limit <= 1000 {
+		params.Set("limit", fmt.Sprintf("%d", limit))
+	} else {
+		params.Set("limit", "1000")
+	}
+	params.Set("sort", sort)
+
+	baseURL := strings.TrimSuffix(dtURL, "/")
+	totalFetched := 0
+	nextSliceKey := ""
+	targetLimit := limit
+	if targetLimit <= 0 {
+		targetLimit = 1000
+	}
+
+	for {
+		requestParams := url.Values{}
+		if nextSliceKey != "" {
+			requestParams.Set("nextSliceKey", nextSliceKey)
+		} else {
+			requestParams = params
+		}
+
+		requester := Requester{
+			method: http.MethodGet,
+			url:    baseURL + "/api/v2/logs/search?" + requestParams.Encode(),
+			headers: map[string]string{
+				"Authorization": "Api-Token " + apiToken,
+				"Accept":        "application/json",
+			},
+			successCode: http.StatusOK,
+		}
+
+		resp, err := requester.send()
+		if err != nil {
+			return fmt.Errorf("managed log search failed: %w", err)
+		}
+
+		var result ManagedLogSearchResult
+		err = json.Unmarshal([]byte(resp), &result)
+		if err != nil {
+			return fmt.Errorf("failed to parse managed log response: %w", err)
+		}
+
+		for _, record := range result.Results {
+			if totalFetched >= targetLimit {
+				return nil
+			}
+			if dumpWriter != nil {
+				dumpWriter.Write([]byte(fmt.Sprintf("%s\n", record.Content)))
+			} else {
+				fmt.Println(record.Content)
+			}
+			totalFetched++
+		}
+
+		if result.NextSliceKey == "" || totalFetched >= targetLimit {
+			break
+		}
+		nextSliceKey = result.NextSliceKey
 	}
 
 	return nil

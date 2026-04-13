@@ -63,6 +63,97 @@ func NewCmdHCPMustGather() *cobra.Command {
 }
 
 func (g *GatherLogsOpts) GatherLogs(clusterID string, elevationReasons ...string) (error error) {
+	if isManagedMode() {
+		return g.gatherLogsManaged(clusterID, elevationReasons...)
+	}
+	return g.gatherLogsGrail(clusterID, elevationReasons...)
+}
+
+func (g *GatherLogsOpts) gatherLogsManaged(clusterID string, elevationReasons ...string) error {
+	apiToken, err := getManagedAPIToken()
+	if err != nil {
+		return err
+	}
+
+	hcpCluster, err := FetchClusterDetails(clusterID)
+	if err != nil {
+		return err
+	}
+
+	_, _, clientset, err := common.GetKubeConfigAndClient(hcpCluster.managementClusterID, elevationReasons...)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve Kubernetes configuration and client for cluster with ID %s: %w", hcpCluster.managementClusterID, err)
+	}
+
+	fmt.Printf("Using HCP Namespace %v\n", hcpCluster.hcpNamespace)
+
+	gatherNamespaces := filterNonEmpty([]string{hcpCluster.hcpNamespace, hcpCluster.klusterletNS, hcpCluster.hostedNS, "hypershift", "cert-manager", "redhat-cert-manager-operator", "open-cluster-management-agent", "open-cluster-management-agent-addon"})
+
+	gatherDir, err := setupGatherDir(g.DestDir, hcpCluster.hcpNamespace)
+	if err != nil {
+		return err
+	}
+
+	from := fmt.Sprintf("now-%dh", g.Since)
+	to := "now"
+
+	for _, gatherNS := range gatherNamespaces {
+		fmt.Printf("Gathering for %s\n", gatherNS)
+
+		pods, err := getPodsForNamespace(clientset, gatherNS)
+		if err != nil {
+			return err
+		}
+
+		nsDir, err := addDir([]string{gatherDir, gatherNS}, []string{})
+		if err != nil {
+			return err
+		}
+
+		totalPods := len(pods.Items)
+		for k, p := range pods.Items {
+			fmt.Printf("[%d/%d] Pod logs for %s\n", k+1, totalPods, p.Name)
+
+			mq := ManagedQuery{}
+			mq.Cluster(hcpCluster.managementClusterName)
+			mq.Namespaces([]string{gatherNS})
+			mq.Pods([]string{p.Name})
+			queryStr := mq.Build()
+
+			podLogFileName := "pod.log"
+			podDirPath, err := addDir([]string{nsDir, "pods", p.Name}, []string{podLogFileName})
+			if err != nil {
+				return err
+			}
+
+			podYaml, err := yaml.Marshal(p)
+			if err != nil {
+				return fmt.Errorf("failed to marshal YAML: %v", err)
+			}
+			podYamlPath := filepath.Join(podDirPath, "pod.yaml")
+			if err := os.WriteFile(podYamlPath, podYaml, 0600); err != nil {
+				return err
+			}
+
+			podLogsFilePath := filepath.Join(podDirPath, podLogFileName)
+			f, err := os.OpenFile(podLogsFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			if err != nil {
+				return err
+			}
+
+			err = getManagedLogs(hcpCluster.DynatraceURL, apiToken, queryStr, from, to, g.Tail, g.SortOrder, f)
+			_ = f.Close()
+			if err != nil {
+				log.Printf("failed to get logs, continuing: %v. Query: %v", err, queryStr)
+				continue
+			}
+		}
+	}
+
+	return nil
+}
+
+func (g *GatherLogsOpts) gatherLogsGrail(clusterID string, elevationReasons ...string) error {
 	accessToken, err := getStorageAccessToken()
 	if err != nil {
 		return fmt.Errorf("failed to acquire access token %v", err)
@@ -406,4 +497,14 @@ func getDeploymentsForNamespace(clientset *kubernetes.Clientset, namespace strin
 	}
 
 	return deploys, nil
+}
+
+func filterNonEmpty(items []string) []string {
+	var result []string
+	for _, s := range items {
+		if strings.TrimSpace(s) != "" {
+			result = append(result, s)
+		}
+	}
+	return result
 }

@@ -178,3 +178,101 @@ func (q *DTQuery) Build() string {
 
 	return q.finalQuery
 }
+
+type ManagedQuery struct {
+	filters []string
+	query   string
+}
+
+func (mq *ManagedQuery) Cluster(clusterName string) *ManagedQuery {
+	mq.filters = append(mq.filters, fmt.Sprintf("dt.kubernetes.cluster.name=\"%s\"", clusterName))
+	return mq
+}
+
+func (mq *ManagedQuery) Namespaces(namespaces []string) *ManagedQuery {
+	if len(namespaces) == 1 {
+		mq.filters = append(mq.filters, fmt.Sprintf("k8s.namespace.name=\"%s\"", namespaces[0]))
+	} else if len(namespaces) > 1 {
+		parts := make([]string, len(namespaces))
+		for i, ns := range namespaces {
+			parts[i] = fmt.Sprintf("k8s.namespace.name=\"%s\"", ns)
+		}
+		mq.filters = append(mq.filters, "("+strings.Join(parts, " OR ")+")")
+	}
+	return mq
+}
+
+func (mq *ManagedQuery) Pods(pods []string) *ManagedQuery {
+	if len(pods) == 1 {
+		mq.filters = append(mq.filters, fmt.Sprintf("k8s.pod.name=\"%s\"", pods[0]))
+	} else if len(pods) > 1 {
+		parts := make([]string, len(pods))
+		for i, p := range pods {
+			parts[i] = fmt.Sprintf("k8s.pod.name=\"%s\"", p)
+		}
+		mq.filters = append(mq.filters, "("+strings.Join(parts, " OR ")+")")
+	}
+	return mq
+}
+
+func (mq *ManagedQuery) Nodes(nodes []string) *ManagedQuery {
+	if len(nodes) == 1 {
+		mq.filters = append(mq.filters, fmt.Sprintf("k8s.node.name=\"%s\"", nodes[0]))
+	} else if len(nodes) > 1 {
+		parts := make([]string, len(nodes))
+		for i, n := range nodes {
+			parts[i] = fmt.Sprintf("k8s.node.name=\"%s\"", n)
+		}
+		mq.filters = append(mq.filters, "("+strings.Join(parts, " OR ")+")")
+	}
+	return mq
+}
+
+func (mq *ManagedQuery) Containers(containers []string) *ManagedQuery {
+	if len(containers) == 1 {
+		mq.filters = append(mq.filters, fmt.Sprintf("k8s.container.name=\"%s\"", containers[0]))
+	} else if len(containers) > 1 {
+		parts := make([]string, len(containers))
+		for i, c := range containers {
+			parts[i] = fmt.Sprintf("k8s.container.name=\"%s\"", c)
+		}
+		mq.filters = append(mq.filters, "("+strings.Join(parts, " OR ")+")")
+	}
+	return mq
+}
+
+func (mq *ManagedQuery) Status(statuses []string) *ManagedQuery {
+	if len(statuses) == 1 {
+		mq.filters = append(mq.filters, fmt.Sprintf("status=\"%s\"", statuses[0]))
+	} else if len(statuses) > 1 {
+		parts := make([]string, len(statuses))
+		for i, s := range statuses {
+			parts[i] = fmt.Sprintf("status=\"%s\"", s)
+		}
+		mq.filters = append(mq.filters, "("+strings.Join(parts, " OR ")+")")
+	}
+	return mq
+}
+
+func (mq *ManagedQuery) ContainsPhrase(phrase string) *ManagedQuery {
+	mq.filters = append(mq.filters, fmt.Sprintf("content=\"%s\"", phrase))
+	return mq
+}
+
+func (mq *ManagedQuery) Deployments(workloads []string) *ManagedQuery {
+	if len(workloads) == 1 {
+		mq.filters = append(mq.filters, fmt.Sprintf("dt.kubernetes.workload.name=\"%s\"", workloads[0]))
+	} else if len(workloads) > 1 {
+		parts := make([]string, len(workloads))
+		for i, w := range workloads {
+			parts[i] = fmt.Sprintf("dt.kubernetes.workload.name=\"%s\"", w)
+		}
+		mq.filters = append(mq.filters, "("+strings.Join(parts, " OR ")+")")
+	}
+	return mq
+}
+
+func (mq *ManagedQuery) Build() string {
+	mq.query = strings.Join(mq.filters, " AND ")
+	return mq.query
+}

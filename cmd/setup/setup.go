@@ -19,6 +19,8 @@ const (
 	PdUserToken             = "pd_user_token" // #nosec G101
 	JiraToken               = "jira_token"
 	DtVaultPath             = "dt_vault_path"
+	DtTenantURL             = "dt_tenant_url"
+	DtIsManaged             = "dt_is_managed"
 	VaultAddress            = "vault_address"
 	CloudTrailCmdLists      = "cloudtrail_cmd_lists"
 	GitLabToken             = "gitlab_access"
@@ -50,6 +52,8 @@ func NewCmdSetup() *cobra.Command {
 
 			optionalKeys := []string{
 				DtVaultPath,
+				DtTenantURL,
+				DtIsManaged,
 				VaultAddress,
 				PdUserToken,
 				JiraToken,
@@ -143,6 +147,10 @@ func NewCmdSetup() *cobra.Command {
 						_, err = ValidateURL(value)
 					case CADAWSAccountID:
 						_, err = ValidateAWSAccount(value)
+					case DtTenantURL:
+						_, err = ValidateURL(value)
+					case DtIsManaged:
+						_, err = ValidateBool(value)
 					}
 				}
 				if err != nil {
@@ -264,6 +272,15 @@ func ValidateGitLabToken(GitLabtoken string) (string, error) {
 		return "", errors.New("invalid GitLab token")
 	}
 	return GitLabtoken, nil
+}
+
+func ValidateBool(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	value = strings.ToLower(value)
+	if value != "true" && value != "false" {
+		return "", errors.New("invalid boolean value, expected 'true' or 'false'")
+	}
+	return value, nil
 }
 
 func ValidateURL(url string) (string, error) {

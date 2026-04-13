@@ -128,6 +128,31 @@ var _ = Describe("Validation Functions", func() {
 		})
 	})
 
+	Context("Bool Validation", func() {
+		It("should validate 'true'", func() {
+			val, err := ValidateBool("true")
+			Expect(err).To(BeNil())
+			Expect(val).To(Equal("true"))
+		})
+
+		It("should validate 'false'", func() {
+			val, err := ValidateBool("false")
+			Expect(err).To(BeNil())
+			Expect(val).To(Equal("false"))
+		})
+
+		It("should validate 'True' (case-insensitive)", func() {
+			val, err := ValidateBool("True")
+			Expect(err).To(BeNil())
+			Expect(val).To(Equal("true"))
+		})
+
+		It("should fail invalid boolean", func() {
+			_, err := ValidateBool("yes")
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
 	Context("URL Validation", func() {
 		It("should validate correct HTTP URL", func() {
 			url, err := ValidateURL("http://grafana.example.com")
@@ -191,6 +216,8 @@ var _ = Describe("NewCmdSetup Command", func() {
 			AwsProxy:               "http://proxy.example.com",
 			StageJumproleConfigKey: "987654321098",
 			DtVaultPath:            "dt-vault-path",
+			DtTenantURL:            "https://managed.example.com",
+			DtIsManaged:            "true",
 			VaultAddress:           "https://vault.example.com",
 			PdUserToken:            "abcdEFGHijklMNOPqrst",
 			JiraToken:              "ABC1234",
@@ -210,6 +237,8 @@ var _ = Describe("NewCmdSetup Command", func() {
 				"http://proxy.example.com",    // AwsProxy
 				"987654321098",                // StageJumproleConfigKey
 				"dt-vault-path",               // DtVaultPath (optional)
+				"https://managed.example.com", // DtTenantURL (optional)
+				"true",                        // DtIsManaged (optional)
 				"https://vault.example.com",   // VaultAddress (optional)
 				"abcdEFGHijklMNOPqrst",        // PdUserToken (optional)
 				"ABC1234",                     // JiraToken (optional)
@@ -229,6 +258,8 @@ var _ = Describe("NewCmdSetup Command", func() {
 			Expect(viper.GetString(AwsProxy)).To(Equal("http://proxy.example.com"))
 			Expect(viper.GetString(StageJumproleConfigKey)).To(Equal("987654321098"))
 			Expect(viper.GetString(DtVaultPath)).To(Equal("dt-vault-path"))
+			Expect(viper.GetString(DtTenantURL)).To(Equal("https://managed.example.com"))
+			Expect(viper.GetString(DtIsManaged)).To(Equal("true"))
 			Expect(viper.GetString(VaultAddress)).To(Equal("https://vault.example.com"))
 			Expect(viper.GetString(PdUserToken)).To(Equal("abcdEFGHijklMNOPqrst"))
 			Expect(viper.GetString(JiraToken)).To(Equal("ABC1234"))

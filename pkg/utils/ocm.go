@@ -713,6 +713,14 @@ func GetHCPNamespace(clusterId string) (namespace string, err error) {
 	return "", fmt.Errorf("no hcp namespace found for %s", clusterId)
 }
 
+func ResolveDynatraceURL(clusterID string) (string, error) {
+	configURL := viper.GetString("dt_tenant_url")
+	if configURL != "" {
+		return ensureTrailingSlash(configURL), nil
+	}
+	return GetDynatraceURLFromLabel(clusterID)
+}
+
 func GetDynatraceURLFromLabel(clusterID string) (url string, err error) {
 	conn, err := CreateConnection()
 	if err != nil {
@@ -734,13 +742,26 @@ func GetDynatraceURLFromLabel(clusterID string) (url string, err error) {
 		if key, ok := label.GetKey(); ok {
 			if key == DynatraceTenantKeyLabel {
 				if value, ok := label.GetValue(); ok {
-					url := fmt.Sprintf("https://%s.apps.dynatrace.com/", value)
-					return url, nil
+					return formatDynatraceURL(value), nil
 				}
 			}
 		}
 	}
 	return "", fmt.Errorf("DT Tenant Not Found")
+}
+
+func formatDynatraceURL(value string) string {
+	if strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
+		return ensureTrailingSlash(value)
+	}
+	return fmt.Sprintf("https://%s.apps.dynatrace.com/", value)
+}
+
+func ensureTrailingSlash(u string) string {
+	if !strings.HasSuffix(u, "/") {
+		return u + "/"
+	}
+	return u
 }
 
 func SendRequest(request *sdk.Request) (*sdk.Response, error) {

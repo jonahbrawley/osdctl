@@ -8,6 +8,7 @@ import (
 
 	k8s "github.com/openshift/osdctl/pkg/k8s"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 )
 
@@ -139,7 +140,6 @@ func GetLinkToWebConsole(dtURL string, from string, to string, finalQuery string
 }
 
 func main(clusterID string) error {
-	var hcpCluster HCPCluster
 	if since <= 0 {
 		return fmt.Errorf("invalid time duration")
 	}
@@ -148,13 +148,64 @@ func main(clusterID string) error {
 		return fmt.Errorf("--to cannot be set to a datetime before --from")
 	}
 
+	if sortOrder != "asc" && sortOrder != "desc" {
+		return fmt.Errorf("invalid sort order, expecting 'asc' or 'desc'")
+	}
+
+	if isManagedMode() {
+		return mainManaged(clusterID)
+	}
+	return mainGrail(clusterID)
+}
+
+func mainManaged(clusterID string) error {
+	dtURL := viper.GetString("dt_tenant_url")
+	if dtURL == "" {
+		return fmt.Errorf("--dynatrace-url (or dt_tenant_url in config) is required when using --managed mode")
+	}
+
+	infraID, err := GetClusterInfraID(clusterID)
+	if err != nil {
+		return fmt.Errorf("failed to resolve cluster infra ID: %v", err)
+	}
+	fmt.Printf("Resolved cluster infra ID: %s\n", infraID)
+
+	managedQuery := GetManagedQuery(infraID, namespaceList, nodeList, containerList, statusList, pod, contains)
+	queryStr := managedQuery.Build()
+
+	var from, to string
+	if !fromVar.IsZero() && !toVar.IsZero() {
+		from = fromVar.Format(time.RFC3339)
+		to = toVar.Format(time.RFC3339)
+	} else {
+		from = fmt.Sprintf("now-%dh", since)
+		to = "now"
+	}
+
+	fmt.Printf("Managed query: %s\n", queryStr)
+	fmt.Printf("Time range: %s to %s\n", from, to)
+
+	if dryRun {
+		return nil
+	}
+
+	if console {
+		fmt.Printf("\nDynatrace Managed Logs URL:\n  %s#logs/query;gtf=%s;gf=all\n", dtURL, from)
+		return nil
+	}
+
+	apiToken, err := getManagedAPIToken()
+	if err != nil {
+		return err
+	}
+
+	return getManagedLogs(dtURL, apiToken, queryStr, from, to, tail, sortOrder, nil)
+}
+
+func mainGrail(clusterID string) error {
 	hcpCluster, err := FetchClusterDetails(clusterID)
 	if err != nil {
 		return fmt.Errorf("failed to acquire cluster details %v", err)
-	}
-
-	if sortOrder != "asc" && sortOrder != "desc" {
-		return fmt.Errorf("invalid sort order, expecting 'asc' or 'desc'")
 	}
 
 	query, err := GetQuery(hcpCluster, fromVar, toVar, since)
@@ -168,9 +219,9 @@ func main(clusterID string) error {
 		var url string
 		var err error
 
-		if !fromVar.IsZero() && !toVar.IsZero() { // Absolute timestamp condition
+		if !fromVar.IsZero() && !toVar.IsZero() {
 			url, err = GetLinkToWebConsole(hcpCluster.DynatraceURL, fromVar.Format(time.RFC3339), toVar.Format(time.RFC3339), query.finalQuery)
-		} else { // otherwise relative (since "mode")
+		} else {
 			url, err = GetLinkToWebConsole(hcpCluster.DynatraceURL, fmt.Sprintf("now()-%dh", since), "now()", query.finalQuery)
 		}
 
@@ -179,10 +230,10 @@ func main(clusterID string) error {
 		}
 
 		fmt.Println("\nLink to Web Console - \n", url)
+		return nil
+	}
 
-		if dryRun {
-			return nil
-		}
+	if dryRun {
 		return nil
 	}
 
@@ -193,7 +244,7 @@ func main(clusterID string) error {
 
 	requestToken, err := getDTQueryExecution(hcpCluster.DynatraceURL, accessToken, query.finalQuery)
 	if err != nil {
-		return fmt.Errorf("failed to get  vault token %v", err)
+		return fmt.Errorf("failed to execute query %v", err)
 	}
 	err = getLogs(hcpCluster.DynatraceURL, accessToken, requestToken, nil)
 	if err != nil {
@@ -201,6 +252,32 @@ func main(clusterID string) error {
 	}
 
 	return nil
+}
+
+func GetManagedQuery(clusterName string, namespaces []string, nodes []string, containers []string, statuses []string, podName string, containsPhrase string) ManagedQuery {
+	mq := ManagedQuery{}
+	mq.Cluster(clusterName)
+
+	if len(namespaces) > 0 {
+		mq.Namespaces(namespaces)
+	}
+	if len(nodes) > 0 {
+		mq.Nodes(nodes)
+	}
+	if podName != "" {
+		mq.Pods([]string{podName})
+	}
+	if len(containers) > 0 {
+		mq.Containers(containers)
+	}
+	if len(statuses) > 0 {
+		mq.Status(statuses)
+	}
+	if containsPhrase != "" {
+		mq.ContainsPhrase(containsPhrase)
+	}
+
+	return mq
 }
 
 func GetQuery(hcpCluster HCPCluster, fromVar time.Time, toVar time.Time, since int) (query DTQuery, error error) {
